@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Timer Bieg/Marsz</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#111111">
+
+  <style>
+    body { font-family: system-ui, Arial; margin: 20px; max-width: 640px; }
+    .card { border: 1px solid #ddd; border-radius: 14px; padding: 16px; margin-top: 12px; }
+    button { padding: 10px 14px; border-radius: 10px; border: 1px solid #bbb; background: #f7f7f7; cursor: pointer; }
+    button.primary { background: #111; color: #fff; border-color: #111; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    select { padding: 10px; border-radius: 10px; border: 1px solid #bbb; width: 100%; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .row > * { flex: 1; }
+    .big { font-size: 44px; font-weight: 800; margin: 8px 0; }
+    .label { font-size: 14px; color: #555; }
+    .status { font-size: 22px; font-weight: 700; }
+    .muted { color: #666; }
+    .pill { display:inline-flex; gap:8px; align-items:center; padding: 6px 10px; border-radius: 999px; border:1px solid #ddd; font-size: 13px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    small { color:#666; }
+    .warn { background:#fff7e6; border:1px solid #ffd28a; padding:10px 12px; border-radius:12px; }
+  </style>
+</head>
+<body>
+  <h1>Timer: Bieg / Marsz</h1>
+
+  <div class="card">
+    <div class="label">Wybierz trening</div>
+    <select id="workout">
+      <option value="w42">Interwały: 4 min bieg / 2 min marsz × 5</option>
+      <option value="w12">Interwały: 1 min bieg / 2 min marsz × 8</option>
+      <option value="easy30">Luźny bieg: 30 minut</option>
+    </select>
+
+    <div style="height:12px"></div>
+
+    <div class="row">
+      <label class="pill"><input id="voiceOn" type="checkbox" checked /> Głos</label>
+      <label class="pill"><input id="beepOn" type="checkbox" checked /> Beep</label>
+      <label class="pill"><input id="keepAwake" type="checkbox" /> Nie gaś ekranu</label>
+    </div>
+
+    <div style="height:10px"></div>
+
+    <div class="row">
+      <div>
+        <div class="label">Głos (jeśli dostępny)</div>
+        <select id="voiceSelect"></select>
+        <small>Tip: po <span class="mono">Start</span> często pojawiają się lepsze głosy.</small>
+      </div>
+      <div>
+        <div class="label">Szybkość</div>
+        <select id="rate">
+          <option value="0.95">0.95</option>
+          <option value="1.00">1.00</option>
+          <option value="1.05" selected>1.05</option>
+          <option value="1.10">1.10</option>
+        </select>
+      </div>
+      <div>
+        <div class="label">Ton</div>
+        <select id="pitch">
+          <option value="0.95">0.95</option>
+          <option value="1.00" selected>1.00</option>
+          <option value="1.05">1.05</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="height:12px"></div>
+
+    <div class="row">
+      <button id="start" class="primary">Start</button>
+      <button id="pause">Pauza</button>
+      <button id="skip">Pomiń segment</button>
+      <button id="stop">Stop</button>
+    </div>
+
+    <div style="height:12px"></div>
+    <div class="warn">
+      <b>Ważne:</b> instalacja PWA działa najlepiej przez <b>HTTPS/HTTP</b>, nie z <span class="mono">file://</span>.
+      Jeśli widzisz słaby głos – wybierz inny z listy.
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label">Aktualnie</div>
+    <div id="status" class="status">Gotowy</div>
+    <div class="big" id="time">00:00</div>
+    <div class="muted" id="next">—</div>
+  </div>
+
+  <div class="card">
+    <div class="label">Plan</div>
+    <ol id="plan"></ol>
+  </div>
+
+<script>
+  // ---------- PWA service worker ----------
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("./sw.js");
+  }
+
+  // ---------- DOM ----------
+  const elWorkout = document.getElementById('workout');
+  const elVoiceOn = document.getElementById('voiceOn');
+  const elBeepOn = document.getElementById('beepOn');
+  const elKeepAwake = document.getElementById('keepAwake');
+  const elVoiceSelect = document.getElementById('voiceSelect');
+  const elRate = document.getElementById('rate');
+  const elPitch = document.getElementById('pitch');
+
+  const elStatus = document.getElementById('status');
+  const elTime = document.getElementById('time');
+  const elNext = document.getElementById('next');
+  const elPlan = document.getElementById('plan');
+
+  const btnStart = document.getElementById('start');
+  const btnPause = document.getElementById('pause');
+  const btnSkip = document.getElementById('skip');
+  const btnStop = document.getElementById('stop');
+
+  // ---------- Workouts ----------
+  function buildSegments(kind) {
+    if (kind === 'w42') {
+      const segs = [];
+      for (let i=0; i<5; i++) {
+        segs.push({ type:'run',  label:'Bieg',  seconds: 4*60 });
+        segs.push({ type:'walk', label:'Marsz', seconds: 2*60 });
+      }
+      return segs;
+    }
+    if (kind === 'w12') {
+      const segs = [];
+      for (let i=0; i<8; i++) {
+        segs.push({ type:'run',  label:'Bieg',  seconds: 1*60 });
+        segs.push({ type:'walk', label:'Marsz', seconds: 2*60 });
+      }
+      return segs;
+    }
+    return [{ type:'easy', label:'Luźny bieg', seconds: 30*60 }];
+  }
+
+  function fmt(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    const m = String(Math.floor(sec/60)).padStart(2,'0');
+    const s = String(sec%60).padStart(2,'0');
+    return `${m}:${s}`;
+  }
+
+  // ---------- Better TTS (voice picker) ----------
+  function listVoices() {
+    const voices = speechSynthesis.getVoices() || [];
+    // Keep current selection if possible
+    const current = elVoiceSelect.value;
+
+    elVoiceSelect.innerHTML = "";
+    // Put Polish voices first
+    const sorted = [...voices].sort((a,b)=>{
+      const apl = (a.lang||"").toLowerCase().startsWith("pl") ? 0 : 1;
+      const bpl = (b.lang||"").toLowerCase().startsWith("pl") ? 0 : 1;
+      if (apl !== bpl) return apl - bpl;
+      return (a.name||"").localeCompare(b.name||"");
+    });
+
+    sorted.forEach((v, i)=>{
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = `${v.name} (${v.lang})`;
+      elVoiceSelect.appendChild(opt);
+    });
+
+    // Auto-select best Polish voice if none selected
+    const bestIndex = sorted.findIndex(v => (v.lang||"").toLowerCase().startsWith("pl") && /google|microsoft|natural/i.test(v.name));
+    const anyPl = sorted.findIndex(v => (v.lang||"").toLowerCase().startsWith("pl"));
+    const pick = (bestIndex >= 0 ? bestIndex : (anyPl >= 0 ? anyPl : 0));
+
+    if (current && elVoiceSelect.querySelector(`option[value="${current}"]`)) {
+      elVoiceSelect.value = current;
+    } else {
+      elVoiceSelect.value = String(pick);
+    }
+
+    return sorted;
+  }
+
+  let cachedVoices = [];
+  function refreshVoices() { cachedVoices = listVoices(); }
+  speechSynthesis.onvoiceschanged = refreshVoices;
+  refreshVoices();
+
+  function getSelectedVoice() {
+    if (!cachedVoices.length) refreshVoices();
+    const idx = Number(elVoiceSelect.value);
+    return cachedVoices[idx] || null;
+  }
+
+  function say(text) {
+    if (!elVoiceOn.checked) return;
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'pl-PL';
+
+      const v = getSelectedVoice();
+      if (v) u.voice = v;
+
+      u.rate = Number(elRate.value || 1.05);
+      u.pitch = Number(elPitch.value || 1.0);
+
+      speechSynthesis.speak(u);
+    } catch {}
+  }
+
+  // ---------- Beep (WebAudio) ----------
+  let audioCtx = null;
+  function beep() {
+    if (!elBeepOn.checked) return;
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = 'sine';
+      o.frequency.value = 880;
+      g.gain.value = 0.08;
+      o.connect(g);
+      g.connect(audioCtx.destination);
+      o.start();
+      setTimeout(()=>{ o.stop(); }, 160);
+    } catch {}
+  }
+
+  // ---------- Keep screen awake (where supported) ----------
+  let wakeLock = null;
+  async function setWakeLock(on) {
+    try {
+      if (!("wakeLock" in navigator)) return;
+      if (on) {
+        wakeLock = await navigator.wakeLock.request("screen");
+      } else {
+        if (wakeLock) await wakeLock.release();
+        wakeLock = null;
+      }
+    } catch {}
+  }
+  elKeepAwake.addEventListener("change", ()=> setWakeLock(elKeepAwake.checked));
+
+  // ---------- Timer state ----------
+  let segments = buildSegments(elWorkout.value);
+  let idx = 0;
+  let remaining = segments[0]?.seconds ?? 0;
+
+  let timer = null;
+  let running = false;
+  let paused = false;
+
+  function renderPlan() {
+    segments = buildSegments(elWorkout.value);
+    elPlan.innerHTML = '';
+    segments.forEach((s,i)=>{
+      const li = document.createElement('li');
+      li.textContent = `${s.label} — ${fmt(s.seconds)}`;
+      if (running && i === idx) li.style.fontWeight = '800';
+      elPlan.appendChild(li);
+    });
+  }
+
+  function setCurrentSegment(i, announce=true) {
+    idx = i;
+    if (idx >= segments.length) {
+      finish();
+      return;
+    }
+    remaining = segments[idx].seconds;
+    const s = segments[idx];
+
+    elStatus.textContent = `${s.label}`;
+    elTime.textContent = fmt(remaining);
+
+    const nxt = segments[idx+1];
+    elNext.textContent = nxt ? `Następne: ${nxt.label} (${fmt(nxt.seconds)})` : 'Następne: koniec';
+
+    renderPlan();
+
+    if (announce) {
+      beep();
+      const minutes = Math.round(s.seconds/60);
+      if (s.type === 'run')  say(`Biegnij ${minutes} ${minutes === 1 ? 'minutę' : 'minuty'}.`);
+      if (s.type === 'walk') say(`Marsz ${minutes} ${minutes === 1 ? 'minutę' : 'minuty'}.`);
+      if (s.type === 'easy') say(`Luźny bieg. Trzydzieści minut.`);
+    }
+  }
+
+  function tick() {
+    remaining -= 1;
+    elTime.textContent = fmt(remaining);
+    if (remaining <= 0) setCurrentSegment(idx + 1, true);
+  }
+
+  function start() {
+    if (running) return;
+
+    // iOS/Android sometimes load voices only after user gesture:
+    refreshVoices();
+
+    segments = buildSegments(elWorkout.value);
+    running = true;
+    paused = false;
+
+    btnStart.disabled = true;
+    btnPause.disabled = false;
+    btnSkip.disabled = false;
+    btnStop.disabled = false;
+    elWorkout.disabled = true;
+
+    if (elKeepAwake.checked) setWakeLock(true);
+
+    setCurrentSegment(0, true);
+    timer = setInterval(tick, 1000);
+  }
+
+  function pause() {
+    if (!running) return;
+    if (!paused) {
+      paused = true;
+      clearInterval(timer);
+      timer = null;
+      btnPause.textContent = 'Wznów';
+      say('Pauza.');
+    } else {
+      paused = false;
+      btnPause.textContent = 'Pauza';
+      say('Wznawiamy.');
+      timer = setInterval(tick, 1000);
+    }
+  }
+
+  function skip() {
+    if (!running) return;
+    setCurrentSegment(idx + 1, true);
+  }
+
+  function stop() {
+    clearInterval(timer);
+    timer = null;
+    running = false;
+    paused = false;
+    idx = 0;
+
+    btnStart.disabled = false;
+    btnPause.disabled = true;
+    btnPause.textContent = 'Pauza';
+    btnSkip.disabled = true;
+    btnStop.disabled = true;
+    elWorkout.disabled = false;
+
+    setWakeLock(false);
+
+    elStatus.textContent = 'Gotowy';
+    elTime.textContent = '00:00';
+    elNext.textContent = '—';
+    renderPlan();
+    say('Zatrzymano.');
+  }
+
+  function finish() {
+    clearInterval(timer);
+    timer = null;
+    running = false;
+    paused = false;
+
+    btnStart.disabled = false;
+    btnPause.disabled = true;
+    btnPause.textContent = 'Pauza';
+    btnSkip.disabled = true;
+    btnStop.disabled = true;
+    elWorkout.disabled = false;
+
+    setWakeLock(false);
+
+    elStatus.textContent = 'Koniec ✅';
+    elTime.textContent = '00:00';
+    elNext.textContent = 'Dobra robota.';
+    renderPlan();
+    beep();
+    say('Koniec treningu. Dobra robota.');
+  }
+
+  // Init
+  btnPause.disabled = true;
+  btnSkip.disabled = true;
+  btnStop.disabled = true;
+
+  elWorkout.addEventListener('change', () => {
+    segments = buildSegments(elWorkout.value);
+    renderPlan();
+  });
+
+  btnStart.addEventListener('click', start);
+  btnPause.addEventListener('click', pause);
+  btnSkip.addEventListener('click', skip);
+  btnStop.addEventListener('click', stop);
+
+  renderPlan();
+</script>
+</body>
+</html>
